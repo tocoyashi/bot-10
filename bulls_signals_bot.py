@@ -30,7 +30,7 @@ TP4_PERC = 5.00
 SL_ATR_MULT = 1.5
 
 # Quality Filters
-MIN_ATR_PERCENT = 0.25
+MIN_ATR_PERCENT = 0.15
 VOLUME_LOOKBACK = 20
 COOLDOWN_HOURS = 4
 COOLDOWN_FILE = Path('cooldown.json')
@@ -40,7 +40,6 @@ BLACKLIST = ['WXT/USDT', 'ANTFUN/USDT', 'UPC/USDT', 'RAIN/USDT', 'USD1/USDT', 'U
 
 
 def _fmt(price):
-    """Smart price formatting"""
     if price >= 1000:   return f"{price:,.2f}"
     elif price >= 1:    return f"{price:,.4f}"
     else:              return f"{price:,.6f}"
@@ -133,7 +132,6 @@ def calculate_atr(df, period=14):
 
 
 def calculate_rsi(series, period=14):
-    """Standard Wilder's RSI"""
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
@@ -143,127 +141,141 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-def find_rsi_divergence(df, lookback=10):
-    """
-    Detects RSI divergence by comparing first half vs second half
-    of the lookback window.
-    """
-    if len(df) < lookback + 5:
-        return None, 0
-
-    close = df['close']
-    rsi = df['rsi']
-    vol = df['volume']
-    vol_sma = df['volume_sma']
-
-    window = df.iloc[-lookback:]
-    mid = len(window) // 2
-    first_half = window.iloc[:mid]
-    second_half = window.iloc[mid:]
-
-    # --- Bullish Divergence ---
-    # Second half makes a lower low in price, but higher low in RSI
-    low1_idx = first_half['close'].idxmin()
-    low2_idx = second_half['close'].idxmin()
-    p1 = first_half['close'].min()
-    p2 = second_half['close'].min()
-    r1 = window.loc[low1_idx, 'rsi']
-    r2 = window.loc[low2_idx, 'rsi']
-
-    if p2 < p1 and r2 > r1:
-        vol_conf = vol.iloc[-1] > vol_sma.iloc[-1]
-        conf = 70 + (10 if vol_conf else 0)
-        return 'bullish', conf
-
-    # --- Bearish Divergence ---
-    # Second half makes a higher high in price, but lower high in RSI
-    high1_idx = first_half['close'].idxmax()
-    high2_idx = second_half['close'].idxmax()
-    p1 = first_half['close'].max()
-    p2 = second_half['close'].max()
-    r1 = window.loc[high1_idx, 'rsi']
-    r2 = window.loc[high2_idx, 'rsi']
-
-    if p2 > p1 and r2 < r1:
-        vol_conf = vol.iloc[-1] > vol_sma.iloc[-1]
-        conf = 70 + (10 if vol_conf else 0)
-        return 'bearish', conf
-
-    return None, 0
+def calculate_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
 
 
 def analyze_symbol(symbol):
     """
-    Full analysis: trend filter (1H) + divergence signal (15m) + quality checks.
-    Returns signal dict or None.
+    Strategy: Trend Following on 1H + EMA/MACD/RSI confirmation on 15m
     """
     try:
         df_15m = get_mexc_data(symbol, TIMEFRAME_ENTRY, limit=150)
         df_1h = get_mexc_data(symbol, TIMEFRAME_TREND, limit=100)
 
         if len(df_15m) < 50 or len(df_1h) < 50:
+            print(f"  {symbol}: Not enough data")
             return None
 
         # === Trend Filter on 1H ===
         df_1h['ema50'] = df_1h['close'].ewm(span=50, adjust=False).mean()
-        trend_bullish = df_1h['close'].iloc[-1] > df_1h['ema50'].iloc[-1]
-        trend_bearish = df_1h['close'].iloc[-1] < df_1h['ema50'].iloc[-1]
+        price_1h = df_1h['close'].iloc[-1]
+        ema50_1h = df_1h['ema50'].iloc[-1]
+        trend_bullish = price_1h > ema50_1h
+        trend_bearish = price_1h < ema50_1h
 
         # === Indicators on 15m ===
+        df_15m['ema9'] = df_15m['close'].ewm(span=9, adjust=False).mean()
+        df_15m['ema21'] = df_15m['close'].ewm(span=21, adjust=False).mean()
         df_15m['rsi'] = calculate_rsi(df_15m['close'], 14)
+        _, _, df_15m['macd_hist'] = calculate_macd(df_15m['close'])
         df_15m['volume_sma'] = df_15m['volume'].rolling(window=VOLUME_LOOKBACK).mean()
         df_15m['atr'] = calculate_atr(df_15m, 14)
         df_15m['atr_pct'] = (df_15m['atr'] / df_15m['close']) * 100
 
-        # === Quality Filters ===
-        atr_pct = df_15m['atr_pct'].iloc[-1]
-        if pd.isna(atr_pct) or atr_pct < MIN_ATR_PERCENT:
-            return None
-
+        # Current values
+        ema9 = df_15m['ema9'].iloc[-1]
+        ema21 = df_15m['ema21'].iloc[-1]
+        ema9_prev = df_15m['ema9'].iloc[-2]
+        ema21_prev = df_15m['ema21'].iloc[-2]
+        rsi = df_15m['rsi'].iloc[-1]
+        macd_hist = df_15m['macd_hist'].iloc[-1]
+        macd_hist_prev = df_15m['macd_hist'].iloc[-2]
         vol_now = df_15m['volume'].iloc[-1]
         vol_avg = df_15m['volume_sma'].iloc[-1]
-        if pd.isna(vol_avg) or vol_now < vol_avg * 0.8:
+        atr_pct = df_15m['atr_pct'].iloc[-1]
+        current_price = df_15m['close'].iloc[-1]
+
+        # === Quality Checks ===
+        if pd.isna(atr_pct) or atr_pct < MIN_ATR_PERCENT:
+            print(f"  {symbol}: ATR too low ({atr_pct:.3f}% < {MIN_ATR_PERCENT}%)")
             return None
 
-        # === Divergence Detection ===
-        div_type, confidence = find_rsi_divergence(df_15m, lookback=10)
-
-        if div_type == 'bullish' and not trend_bullish:
-            return None  # Fighting the trend
-        if div_type == 'bearish' and not trend_bearish:
+        if pd.isna(vol_avg) or vol_now < vol_avg * 0.7:
+            print(f"  {symbol}: Volume too low")
             return None
 
-        if div_type is None:
+        if pd.isna(rsi) or pd.isna(macd_hist):
+            print(f"  {symbol}: Indicators not ready")
             return None
+
+        # === Strategy Conditions ===
+        confidence = 50
+        direction = None
+        reason = ""
+
+        # LONG conditions
+        if trend_bullish:
+            # EMA cross or EMA alignment
+            ema_aligned = ema9 > ema21
+            ema_cross = (ema9_prev <= ema21_prev) and (ema9 > ema21)
+            macd_rising = macd_hist > macd_hist_prev and macd_hist > -0.5 * abs(macd_hist_prev)
+            rsi_ok = 35 < rsi < 70  # Not overbought, some room
+
+            if ema_aligned and macd_rising and rsi_ok:
+                direction = "LONG"
+                reason = "EMA Bullish + MACD Rising"
+                confidence = 65
+                if ema_cross:
+                    confidence += 10
+                    reason = "EMA Cross + MACD Rising"
+                if rsi < 55:
+                    confidence += 5
+                if vol_now > vol_avg * 1.2:
+                    confidence += 5
+                if macd_hist > 0:
+                    confidence += 5
+
+        # SHORT conditions
+        elif trend_bearish:
+            ema_aligned = ema9 < ema21
+            ema_cross = (ema9_prev >= ema21_prev) and (ema9 < ema21)
+            macd_falling = macd_hist < macd_hist_prev and macd_hist < 0.5 * abs(macd_hist_prev)
+            rsi_ok = 30 < rsi < 65  # Not oversold, some room
+
+            if ema_aligned and macd_falling and rsi_ok:
+                direction = "SHORT"
+                reason = "EMA Bearish + MACD Falling"
+                confidence = 65
+                if ema_cross:
+                    confidence += 10
+                    reason = "EMA Cross + MACD Falling"
+                if rsi > 45:
+                    confidence += 5
+                if vol_now > vol_avg * 1.2:
+                    confidence += 5
+                if macd_hist < 0:
+                    confidence += 5
+
+        if direction is None:
+            print(f"  {symbol}: No signal (Trend: {'UP' if trend_bullish else 'DOWN'}, EMA9/21: {ema9:.2f}/{ema21:.2f}, RSI: {rsi:.1f}, MACD: {macd_hist:.4f})")
+            return None
+
+        confidence = min(95, confidence)
 
         # === Build Signal ===
-        current_price = df_15m['close'].iloc[-1]
         atr = df_15m['atr'].iloc[-1]
 
-        if div_type == 'bullish':
-            direction = "LONG"
+        if direction == "LONG":
             sl = current_price - (atr * SL_ATR_MULT)
             tp1 = current_price * (1 + TP1_PERC / 100)
             tp2 = current_price * (1 + TP2_PERC / 100)
             tp3 = current_price * (1 + TP3_PERC / 100)
             tp4 = current_price * (1 + TP4_PERC / 100)
         else:
-            direction = "SHORT"
             sl = current_price + (atr * SL_ATR_MULT)
             tp1 = current_price * (1 - TP1_PERC / 100)
             tp2 = current_price * (1 - TP2_PERC / 100)
             tp3 = current_price * (1 - TP3_PERC / 100)
             tp4 = current_price * (1 - TP4_PERC / 100)
 
-        # Distance to SL in %
         sl_dist = abs(current_price - sl) / current_price * 100
         rr = round(TP4_PERC / sl_dist, 2) if sl_dist > 0 else 0
-
-        # Extra confidence boosters
-        if vol_now > vol_avg * 1.5:
-            confidence = min(95, confidence + 10)
-        if atr_pct > 0.5:
-            confidence = min(95, confidence + 5)
 
         return {
             'symbol': symbol,
@@ -277,11 +289,14 @@ def analyze_symbol(symbol):
             'confidence': confidence,
             'rr': rr,
             'atr_pct': atr_pct,
-            'trend': "BULLISH" if trend_bullish else "BEARISH"
+            'trend': "BULLISH" if trend_bullish else "BEARISH",
+            'reason': reason,
+            'rsi': rsi,
+            'macd_hist': macd_hist
         }
 
     except Exception as e:
-        print(f"Error analyzing {symbol}: {e}")
+        print(f"  {symbol}: Error - {e}")
         return None
 
 
@@ -291,6 +306,7 @@ def build_message(signal):
     conf = signal['confidence']
     rr = signal['rr']
     trend = signal['trend']
+    reason = signal['reason']
 
     emoji_dir = "🟢" if direction == "LONG" else "🔴"
     emoji_conf = "🔥" if conf >= 85 else "✅" if conf >= 70 else "⚡"
@@ -299,6 +315,7 @@ def build_message(signal):
 │ {TIMEFRAME_ENTRY} │ {direction} │ {LEVERAGE}x
 
 Confidence: {conf}% {emoji_conf}
+Strategy: {reason}
 Trend (1H): {trend}
 Risk/Reward: 1:{rr}
 
@@ -319,7 +336,7 @@ L E A K E D  B Y: @BULLS_SIGNALS"""
 
 def main():
     print("=" * 50)
-    print("BULLS SIGNALS — Smart Divergence Bot")
+    print("BULLS SIGNALS — Trend Following Bot")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 50)
 
@@ -337,10 +354,12 @@ def main():
     skipped_cooldown = 0
     skipped_filter = 0
 
+    print("\nScanning coins...")
     for symbol in top_coins:
         try:
             if is_on_cooldown(symbol, cooldown_data):
                 skipped_cooldown += 1
+                print(f"  {symbol}: On cooldown")
                 continue
 
             time.sleep(0.6)
@@ -350,8 +369,8 @@ def main():
                 skipped_filter += 1
                 continue
 
-            # Only send if confidence is decent
             if signal['confidence'] < 60:
+                print(f"  {symbol}: Confidence too low ({signal['confidence']}%)")
                 skipped_filter += 1
                 continue
 
@@ -359,11 +378,11 @@ def main():
             send_telegram(msg)
             cooldown_data[symbol] = datetime.now().isoformat()
             signals_sent += 1
-            print(f"✅ Signal sent: {symbol} {signal['direction']} (Conf: {signal['confidence']}%)")
+            print(f"  ✅ SIGNAL SENT: {symbol} {signal['direction']} (Conf: {signal['confidence']}%)")
             time.sleep(1.5)
 
         except Exception as e:
-            print(f"Error processing {symbol}: {e}")
+            print(f"  {symbol}: Exception - {e}")
 
     save_cooldown(cooldown_data)
     print(f"\n🏁 Done. Signals: {signals_sent} | Cooldown skipped: {skipped_cooldown} | Filter skipped: {skipped_filter}")
