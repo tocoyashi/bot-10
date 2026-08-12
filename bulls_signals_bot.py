@@ -30,9 +30,9 @@ TP4_PERC = 5.00
 SL_ATR_MULT = 1.5
 
 # Quality Filters
-MIN_ATR_PERCENT = 0.15
+MIN_ATR_PERCENT = 0.05
 VOLUME_LOOKBACK = 20
-COOLDOWN_HOURS = 4
+COOLDOWN_HOURS = 1
 COOLDOWN_FILE = Path('cooldown.json')
 
 STABLECOINS = ['USDC/USDT', 'TUSD/USDT', 'DAI/USDT', 'FDUSD/USDT', 'USDP/USDT', 'PYUSD/USDT']
@@ -196,8 +196,8 @@ def analyze_symbol(symbol):
             print(f"  {symbol}: ATR too low ({atr_pct:.3f}% < {MIN_ATR_PERCENT}%)")
             return None
 
-        if pd.isna(vol_avg) or vol_now < vol_avg * 0.7:
-            print(f"  {symbol}: Volume too low")
+        if pd.isna(vol_avg) or vol_now < vol_avg * 0.5:
+            print(f"  {symbol}: Volume too low ({vol_now:.0f} < {vol_avg:.0f})")
             return None
 
         if pd.isna(rsi) or pd.isna(macd_hist):
