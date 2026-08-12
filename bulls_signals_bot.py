@@ -27,6 +27,8 @@ TP1_PERC = 0.70
 TP2_PERC = 1.50
 TP3_PERC = 2.80
 TP4_PERC = 5.00
+TP5_PERC = 7.20
+TP6_PERC = 10.40
 SL_ATR_MULT = 1.5
 
 # Quality Filters
@@ -207,23 +209,19 @@ def analyze_symbol(symbol):
         # === Strategy Conditions ===
         confidence = 50
         direction = None
-        reason = ""
 
         # LONG conditions
         if trend_bullish:
-            # EMA cross or EMA alignment
             ema_aligned = ema9 > ema21
             ema_cross = (ema9_prev <= ema21_prev) and (ema9 > ema21)
             macd_rising = macd_hist > macd_hist_prev and macd_hist > -0.5 * abs(macd_hist_prev)
-            rsi_ok = 35 < rsi < 70  # Not overbought, some room
+            rsi_ok = 35 < rsi < 70
 
             if ema_aligned and macd_rising and rsi_ok:
                 direction = "LONG"
-                reason = "EMA Bullish + MACD Rising"
                 confidence = 65
                 if ema_cross:
                     confidence += 10
-                    reason = "EMA Cross + MACD Rising"
                 if rsi < 55:
                     confidence += 5
                 if vol_now > vol_avg * 1.2:
@@ -236,15 +234,13 @@ def analyze_symbol(symbol):
             ema_aligned = ema9 < ema21
             ema_cross = (ema9_prev >= ema21_prev) and (ema9 < ema21)
             macd_falling = macd_hist < macd_hist_prev and macd_hist < 0.5 * abs(macd_hist_prev)
-            rsi_ok = 30 < rsi < 65  # Not oversold, some room
+            rsi_ok = 30 < rsi < 65
 
             if ema_aligned and macd_falling and rsi_ok:
                 direction = "SHORT"
-                reason = "EMA Bearish + MACD Falling"
                 confidence = 65
                 if ema_cross:
                     confidence += 10
-                    reason = "EMA Cross + MACD Falling"
                 if rsi > 45:
                     confidence += 5
                 if vol_now > vol_avg * 1.2:
@@ -267,15 +263,19 @@ def analyze_symbol(symbol):
             tp2 = current_price * (1 + TP2_PERC / 100)
             tp3 = current_price * (1 + TP3_PERC / 100)
             tp4 = current_price * (1 + TP4_PERC / 100)
+            tp5 = current_price * (1 + TP5_PERC / 100)
+            tp6 = current_price * (1 + TP6_PERC / 100)
         else:
             sl = current_price + (atr * SL_ATR_MULT)
             tp1 = current_price * (1 - TP1_PERC / 100)
             tp2 = current_price * (1 - TP2_PERC / 100)
             tp3 = current_price * (1 - TP3_PERC / 100)
             tp4 = current_price * (1 - TP4_PERC / 100)
+            tp5 = current_price * (1 - TP5_PERC / 100)
+            tp6 = current_price * (1 - TP6_PERC / 100)
 
         sl_dist = abs(current_price - sl) / current_price * 100
-        rr = round(TP4_PERC / sl_dist, 2) if sl_dist > 0 else 0
+        rr = round(TP6_PERC / sl_dist, 2) if sl_dist > 0 else 0
 
         return {
             'symbol': symbol,
@@ -286,13 +286,12 @@ def analyze_symbol(symbol):
             'tp2': tp2,
             'tp3': tp3,
             'tp4': tp4,
+            'tp5': tp5,
+            'tp6': tp6,
             'confidence': confidence,
             'rr': rr,
             'atr_pct': atr_pct,
-            'trend': "BULLISH" if trend_bullish else "BEARISH",
-            'reason': reason,
-            'rsi': rsi,
-            'macd_hist': macd_hist
+            'trend': "BULLISH" if trend_bullish else "BEARISH"
         }
 
     except Exception as e:
@@ -306,30 +305,37 @@ def build_message(signal):
     conf = signal['confidence']
     rr = signal['rr']
     trend = signal['trend']
-    reason = signal['reason']
 
-    emoji_dir = "🟢" if direction == "LONG" else "🔴"
     emoji_conf = "🔥" if conf >= 85 else "✅" if conf >= 70 else "⚡"
+    sl_emoji = "🛡️" if direction == "LONG" else "🔻"
 
-    msg = f"""{emoji_dir} SIGNAL #{pair}
-│ {TIMEFRAME_ENTRY} │ {direction} │ {LEVERAGE}x
+    msg = f"""🧭 New Signal Detected
+
+#{pair} │ {direction} │
 
 Confidence: {conf}% {emoji_conf}
-Strategy: {reason}
-Trend (1H): {trend}
 Risk/Reward: 1:{rr}
+
+Leverage: {LEVERAGE}x
+Trend (1H): {trend}
+
 
 📌 ENTRY: {_fmt(signal['price'])}
 
-🎯 TP1 ➜ {_fmt(signal['tp1'])}  (+{TP1_PERC}%)
-🎯 TP2 ➜ {_fmt(signal['tp2'])}  (+{TP2_PERC}%)
-🎯 TP3 ➜ {_fmt(signal['tp3'])}  (+{TP3_PERC}%)
-☀️ TP4 ➜ {_fmt(signal['tp4'])}  (+{TP4_PERC}%)
+🎯 TP1 : {_fmt(signal['tp1'])}  (+{TP1_PERC}%)
+🎯 TP2 : {_fmt(signal['tp2'])}  (+{TP2_PERC}%)
+🎯 TP3 : {_fmt(signal['tp3'])}  (+{TP3_PERC}%)
+🎯 TP4 : {_fmt(signal['tp4'])}  (+{TP4_PERC}%)
+🎯 TP5 : {_fmt(signal['tp5'])}  (+{TP5_PERC}%)
+☀️ TP6 : {_fmt(signal['tp6'])}  (+{TP6_PERC}%)
 
-🛡️ SL: {_fmt(signal['sl'])}
-↻ Move to BE after TP1
-
-L E A K E D  B Y: @BULLS_SIGNALS"""
+{sl_emoji} SL: {_fmt(signal['sl'])}
+————-
+Trade cautiously; you're not foolish or reckless.
+Don't borrow money or use funds that could put you in debt.
+Check the confidence indicator (in the signal).
+For automated trading, use cornix backtesting first.
+L E A K E D B Y: @BULLS_SIGNALS"""
 
     return msg
 
