@@ -327,7 +327,7 @@ Trend (1H): {trend}
 🎯 TP3 : {_fmt(signal['tp3'])}  (+{TP3_PERC}%)
 🎯 TP4 : {_fmt(signal['tp4'])}  (+{TP4_PERC}%)
 🎯 TP5 : {_fmt(signal['tp5'])}  (+{TP5_PERC}%)
-☀️ TP6 : {_fmt(signal['tp6'])}  (+{TP6_PERC}%)
+🎯 TP6 : {_fmt(signal['tp6'])}  (+{TP6_PERC}%)
 
 {sl_emoji} SL: {_fmt(signal['sl'])}
 ————-
