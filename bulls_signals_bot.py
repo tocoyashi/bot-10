@@ -30,6 +30,7 @@ TP4_PERC = 5.00
 TP5_PERC = 7.20
 TP6_PERC = 10.40
 SL_ATR_MULT = 1.5
+MAX_SL_PERC = 1.0  # ← الحد الأقصى لوقف الخسارة (1%)
 
 # Quality Filters
 MIN_ATR_PERCENT = 0.05
@@ -274,7 +275,17 @@ def analyze_symbol(symbol):
             tp5 = current_price * (1 - TP5_PERC / 100)
             tp6 = current_price * (1 - TP6_PERC / 100)
 
+        # === CAP SL AT 1% ===
         sl_dist = abs(current_price - sl) / current_price * 100
+        
+        if sl_dist > MAX_SL_PERC:
+            if direction == "LONG":
+                sl = current_price * (1 - MAX_SL_PERC / 100)
+            else:
+                sl = current_price * (1 + MAX_SL_PERC / 100)
+            sl_dist = MAX_SL_PERC
+            print(f"  {symbol}: SL capped at {MAX_SL_PERC}% (was {sl_dist:.2f}%)")
+
         rr = round(TP6_PERC / sl_dist, 2) if sl_dist > 0 else 0
 
         return {
