@@ -17,29 +17,29 @@ warnings.filterwarnings('ignore')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN') or os.environ.get('BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
-TIMEFRAME_ENTRY = '15m'
-TIMEFRAME_TREND = '1h'
-TOP_N_COINS = 25
+TIMEFRAME = '15m'
+TOP_N_COINS = 40
 LEVERAGE = 15
 
-# Risk & Targets
-TP1_PERC = 0.70
-TP2_PERC = 1.50
-TP3_PERC = 2.80
-TP4_PERC = 5.00
-TP5_PERC = 7.20
-TP6_PERC = 10.40
-SL_ATR_MULT = 1.5
-MAX_SL_PERC = 1.0  # ← الحد الأقصى لوقف الخسارة (1%)
+# Targets (User specified)
+TP1_PERC = 0.80
+TP2_PERC = 1.85
+TP3_PERC = 3.00
+TP4_PERC = 6.00
+TP5_PERC = 9.00
+
+# ⚡ SL ديناميكي بناءً على ATR
+ATR_SL_MULTIPLIER = 2.5
+# 🔒 الحد الأقصى لوقف الخسارة (لا يتجاوز هذا الرقم)
+MAX_SL_PERC = 2.2
 
 # Quality Filters
-MIN_ATR_PERCENT = 0.05
 VOLUME_LOOKBACK = 20
 COOLDOWN_HOURS = 1
 COOLDOWN_FILE = Path('cooldown.json')
 
 STABLECOINS = ['USDC/USDT', 'TUSD/USDT', 'DAI/USDT', 'FDUSD/USDT', 'USDP/USDT', 'PYUSD/USDT']
-BLACKLIST = ['WXT/USDT', 'ANTFUN/USDT', 'UPC/USDT', 'RAIN/USDT', 'USD1/USDT', 'USDE/USDT', 'BEAT/USDT', 'AKE/USDT', 'MY/USDT', 'MBG/USDT', 'AIX/USDT', 'XPLK/USDT', 'ZAY/USDT', '9BIT/USDT', 'CYS/USDT', 'GOLD/USDT']
+BLACKLIST = ['WXT/USDT', 'ANTFUN/USDT', 'UPC/USDT', 'RAIN/USDT', 'USD1/USDT', 'APR/USDT', 'USDE/USDT', 'BEAT/USDT', 'AKE/USDT', 'TUT/USDT', 'MY/USDT', 'MX/USDT', 'ISEK/USDT', 'MBG/USDT', 'AIX/USDT', 'XPLK/USDT', 'ZAY/USDT', '9BIT/USDT', 'CYS/USDT', 'USDGOUSDT', 'GOLD/USDT']
 
 
 def _fmt(price):
@@ -89,7 +89,7 @@ def send_telegram(message):
         'disable_web_page_preview': True
     }
     try:
-        r = requests.post(url, json=payload, timeout=15)
+        r = requests.post(url, json=payload, timeout=30)
         if not r.json().get('ok'):
             print(f"Telegram error: {r.json().get('description')}")
     except Exception as e:
@@ -105,7 +105,7 @@ def get_mexc_data(symbol, timeframe, limit=150):
     return df
 
 
-def get_top_mexc_coins(limit=20):
+def get_top_mexc_coins(limit=50):
     print(f"Fetching top {limit} coins by volume from MEXC...")
     exchange = ccxt.mexc({'enableRateLimit': True})
     try:
@@ -114,7 +114,7 @@ def get_top_mexc_coins(limit=20):
         for symbol, ticker in tickers.items():
             if symbol.endswith('/USDT') and symbol not in STABLECOINS and symbol not in BLACKLIST:
                 vol = ticker.get('quoteVolume') or 0
-                if vol > 500000:
+                if vol > 200000:
                     usdt_pairs.append({'symbol': symbol, 'volume': vol})
         usdt_pairs.sort(key=lambda x: x['volume'], reverse=True)
         top = [p['symbol'] for p in usdt_pairs[:limit]]
@@ -134,175 +134,165 @@ def calculate_atr(df, period=14):
     return tr.rolling(window=period).mean()
 
 
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-
-def calculate_macd(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
-    return macd_line, signal_line, histogram
+def supertrend(df, atr_period=10, multiplier=3):
+    hl2 = (df['high'] + df['low']) / 2
+    atr = df['high'].rolling(atr_period).max() - df['low'].rolling(atr_period).min()
+    atr = atr.rolling(atr_period).mean()
+    upper_band = hl2 + (multiplier * atr)
+    lower_band = hl2 - (multiplier * atr)
+    st = pd.Series(index=df.index, dtype=float)
+    direction = pd.Series(index=df.index, dtype=int)
+    for i in range(len(df)):
+        if i == 0:
+            st.iloc[i] = upper_band.iloc[i]
+            direction.iloc[i] = 1
+        else:
+            if df['close'].iloc[i] > st.iloc[i-1]:
+                st.iloc[i] = max(lower_band.iloc[i], st.iloc[i-1])
+                direction.iloc[i] = 1
+            else:
+                st.iloc[i] = min(upper_band.iloc[i], st.iloc[i-1])
+                direction.iloc[i] = -1
+    return st, direction
 
 
 def analyze_symbol(symbol):
-    """
-    Strategy: Trend Following on 1H + EMA/MACD/RSI confirmation on 15m
-    """
     try:
-        df_15m = get_mexc_data(symbol, TIMEFRAME_ENTRY, limit=150)
-        df_1h = get_mexc_data(symbol, TIMEFRAME_TREND, limit=100)
-
-        if len(df_15m) < 50 or len(df_1h) < 50:
-            print(f"  {symbol}: Not enough data")
+        df = get_mexc_data(symbol, TIMEFRAME, limit=150)
+        if len(df) < 50:
             return None
 
-        # === Trend Filter on 1H ===
-        df_1h['ema50'] = df_1h['close'].ewm(span=50, adjust=False).mean()
-        price_1h = df_1h['close'].iloc[-1]
-        ema50_1h = df_1h['ema50'].iloc[-1]
-        trend_bullish = price_1h > ema50_1h
-        trend_bearish = price_1h < ema50_1h
+        # Supertrend
+        df['st_line'], df['st_dir'] = supertrend(df)
 
-        # === Indicators on 15m ===
-        df_15m['ema9'] = df_15m['close'].ewm(span=9, adjust=False).mean()
-        df_15m['ema21'] = df_15m['close'].ewm(span=21, adjust=False).mean()
-        df_15m['rsi'] = calculate_rsi(df_15m['close'], 14)
-        _, _, df_15m['macd_hist'] = calculate_macd(df_15m['close'])
-        df_15m['volume_sma'] = df_15m['volume'].rolling(window=VOLUME_LOOKBACK).mean()
-        df_15m['atr'] = calculate_atr(df_15m, 14)
-        df_15m['atr_pct'] = (df_15m['atr'] / df_15m['close']) * 100
+        # MACD
+        ema12 = df['close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['close'].ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        df['macd_hist'] = macd_line - signal_line
+
+        # RSI
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+        # ATR & Volume
+        df['atr'] = calculate_atr(df, 14)
+        df['vol_sma'] = df['volume'].rolling(window=VOLUME_LOOKBACK).mean()
 
         # Current values
-        ema9 = df_15m['ema9'].iloc[-1]
-        ema21 = df_15m['ema21'].iloc[-1]
-        ema9_prev = df_15m['ema9'].iloc[-2]
-        ema21_prev = df_15m['ema21'].iloc[-2]
-        rsi = df_15m['rsi'].iloc[-1]
-        macd_hist = df_15m['macd_hist'].iloc[-1]
-        macd_hist_prev = df_15m['macd_hist'].iloc[-2]
-        vol_now = df_15m['volume'].iloc[-1]
-        vol_avg = df_15m['volume_sma'].iloc[-1]
-        atr_pct = df_15m['atr_pct'].iloc[-1]
-        current_price = df_15m['close'].iloc[-1]
+        row = df.iloc[-1]
+        prev = df.iloc[-2]
+        st_bull = row['st_dir'] == 1
+        st_bear = row['st_dir'] == -1
+        macd_hist = row['macd_hist']
+        macd_hist_prev = prev['macd_hist']
+        rsi = row['rsi']
+        vol_now = row['volume']
+        vol_avg = row['vol_sma']
+        current_price = row['close']
+        atr = row['atr']
 
-        # === Quality Checks ===
-        if pd.isna(atr_pct) or atr_pct < MIN_ATR_PERCENT:
-            print(f"  {symbol}: ATR too low ({atr_pct:.3f}% < {MIN_ATR_PERCENT}%)")
-            return None
-
-        if pd.isna(vol_avg) or vol_now < vol_avg * 0.5:
-            print(f"  {symbol}: Volume too low ({vol_now:.0f} < {vol_avg:.0f})")
-            return None
-
-        if pd.isna(rsi) or pd.isna(macd_hist):
+        if pd.isna(rsi) or pd.isna(macd_hist) or pd.isna(atr):
             print(f"  {symbol}: Indicators not ready")
             return None
 
-        # === Strategy Conditions ===
+        if vol_now < vol_avg * 0.3:
+            print(f"  {symbol}: Volume too low")
+            return None
+
         confidence = 50
         direction = None
 
-        # LONG conditions
-        if trend_bullish:
-            ema_aligned = ema9 > ema21
-            ema_cross = (ema9_prev <= ema21_prev) and (ema9 > ema21)
-            macd_rising = macd_hist > macd_hist_prev and macd_hist > -0.5 * abs(macd_hist_prev)
+        # LONG
+        if st_bull:
+            macd_ok = macd_hist > macd_hist_prev or macd_hist > 0
             rsi_ok = 35 < rsi < 70
-
-            if ema_aligned and macd_rising and rsi_ok:
+            if macd_ok and rsi_ok:
                 direction = "LONG"
                 confidence = 65
-                if ema_cross:
-                    confidence += 10
-                if rsi < 55:
-                    confidence += 5
-                if vol_now > vol_avg * 1.2:
-                    confidence += 5
-                if macd_hist > 0:
-                    confidence += 5
+                if macd_hist > 0: confidence += 5
+                if vol_now > vol_avg * 1.2: confidence += 5
+                if rsi < 55: confidence += 5
 
-        # SHORT conditions
-        elif trend_bearish:
-            ema_aligned = ema9 < ema21
-            ema_cross = (ema9_prev >= ema21_prev) and (ema9 < ema21)
-            macd_falling = macd_hist < macd_hist_prev and macd_hist < 0.5 * abs(macd_hist_prev)
+        # SHORT
+        elif st_bear:
+            macd_ok = macd_hist < macd_hist_prev or macd_hist < 0
             rsi_ok = 30 < rsi < 65
-
-            if ema_aligned and macd_falling and rsi_ok:
+            if macd_ok and rsi_ok:
                 direction = "SHORT"
                 confidence = 65
-                if ema_cross:
-                    confidence += 10
-                if rsi > 45:
-                    confidence += 5
-                if vol_now > vol_avg * 1.2:
-                    confidence += 5
-                if macd_hist < 0:
-                    confidence += 5
+                if macd_hist < 0: confidence += 5
+                if vol_now > vol_avg * 1.2: confidence += 5
+                if rsi > 45: confidence += 5
 
         if direction is None:
-            print(f"  {symbol}: No signal (Trend: {'UP' if trend_bullish else 'DOWN'}, EMA9/21: {ema9:.2f}/{ema21:.2f}, RSI: {rsi:.1f}, MACD: {macd_hist:.4f})")
+            print(f"  {symbol}: No signal (ST: {'UP' if st_bull else 'DOWN'}, RSI: {rsi:.1f}, MACD: {macd_hist:.4f})")
             return None
 
         confidence = min(95, confidence)
+        if confidence < 55:
+            print(f"  {symbol}: Confidence too low ({confidence}%)")
+            return None
 
-        # === Build Signal ===
-        atr = df_15m['atr'].iloc[-1]
+        # ═══════════════════════════════════════════════
+        # ⚡ SL ديناميكي بناءً على ATR + حد أقصى 2.2%
+        # ═══════════════════════════════════════════════
+        sl_distance = atr * ATR_SL_MULTIPLIER
+        max_sl_distance = current_price * (MAX_SL_PERC / 100)
+
+        # إذا تجاوز الديناميكي 2.2%، نُجبره على 2.2%
+        if sl_distance > max_sl_distance:
+            sl_distance = max_sl_distance
+            sl_capped = True
+        else:
+            sl_capped = False
 
         if direction == "LONG":
-            sl = current_price - (atr * SL_ATR_MULT)
+            entry1 = current_price
+            entry2 = current_price - (atr * 1.0)
+            sl = current_price - sl_distance
             tp1 = current_price * (1 + TP1_PERC / 100)
             tp2 = current_price * (1 + TP2_PERC / 100)
             tp3 = current_price * (1 + TP3_PERC / 100)
             tp4 = current_price * (1 + TP4_PERC / 100)
             tp5 = current_price * (1 + TP5_PERC / 100)
-            tp6 = current_price * (1 + TP6_PERC / 100)
         else:
-            sl = current_price + (atr * SL_ATR_MULT)
+            entry1 = current_price
+            entry2 = current_price + (atr * 1.0)
+            sl = current_price + sl_distance
             tp1 = current_price * (1 - TP1_PERC / 100)
             tp2 = current_price * (1 - TP2_PERC / 100)
             tp3 = current_price * (1 - TP3_PERC / 100)
             tp4 = current_price * (1 - TP4_PERC / 100)
             tp5 = current_price * (1 - TP5_PERC / 100)
-            tp6 = current_price * (1 - TP6_PERC / 100)
 
-        # === CAP SL AT 1% ===
-        sl_dist = abs(current_price - sl) / current_price * 100
-        
-        if sl_dist > MAX_SL_PERC:
-            if direction == "LONG":
-                sl = current_price * (1 - MAX_SL_PERC / 100)
-            else:
-                sl = current_price * (1 + MAX_SL_PERC / 100)
-            sl_dist = MAX_SL_PERC
-            print(f"  {symbol}: SL capped at {MAX_SL_PERC}% (was {sl_dist:.2f}%)")
-
-        rr = round(TP6_PERC / sl_dist, 2) if sl_dist > 0 else 0
+        # نسبة R:R ديناميكية
+        risk = abs(current_price - sl)
+        reward = abs(tp5 - current_price)
+        rr = round(reward / risk, 1) if risk > 0 else 0
 
         return {
             'symbol': symbol,
             'direction': direction,
-            'price': current_price,
+            'accuracy': round(confidence / 10),
+            'rr': rr,
+            'entry1': entry1,
+            'entry2': entry2,
             'sl': sl,
             'tp1': tp1,
             'tp2': tp2,
             'tp3': tp3,
             'tp4': tp4,
             'tp5': tp5,
-            'tp6': tp6,
-            'confidence': confidence,
-            'rr': rr,
-            'atr_pct': atr_pct,
-            'trend': "BULLISH" if trend_bullish else "BEARISH"
+            'atr': atr,
+            'sl_distance_pct': round((risk / current_price) * 100, 2),
+            'sl_capped': sl_capped
         }
 
     except Exception as e:
@@ -313,48 +303,46 @@ def analyze_symbol(symbol):
 def build_message(signal):
     pair = signal['symbol'].replace('/', '')
     direction = signal['direction']
-    conf = signal['confidence']
-    rr = signal['rr']
-    trend = signal['trend']
+    accuracy = signal['accuracy']
 
-    emoji_conf = "🔥" if conf >= 85 else "✅" if conf >= 70 else "⚡"
-    sl_emoji = "🛡️" if direction == "LONG" else "🔻"
+    if accuracy >= 8:
+        strength = "High"
+    elif accuracy >= 6:
+        strength = "Medium"
+    else:
+        strength = "Low"
 
-    msg = f"""🧭 New Signal Detected
+    entry_low = min(signal['entry1'], signal['entry2'])
+    entry_high = max(signal['entry1'], signal['entry2'])
 
-#{pair} │ {direction} │
+    # إشعار إذا تم تفعيل الحد الأقصى
+    capped_text = " 🔒Capped" if signal.get('sl_capped') else ""
 
-Confidence: {conf}% {emoji_conf}
-Risk/Reward: 1:{rr}
-
+    msg = f"""🧲 A New Signal has been added::
+COIN: #{pair}
 Leverage: {LEVERAGE}x
-Trend (1H): {trend}
+Direction: {direction} | Type: Swing Pullback
+Signal Strength: {strength}
+——————————
+ENTRY: {_fmt(entry_low)} - {_fmt(entry_high)}
+TARGETS: {_fmt(signal['tp1'])} - {_fmt(signal['tp2'])} - {_fmt(signal['tp3'])} - {_fmt(signal['tp4'])} - {_fmt(signal['tp5'])}
+STOP LOSS: {_fmt(signal['sl'])} ({signal['sl_distance_pct']}%{capped_text})
 
+✅ RISK MANAGEMENT
+• Move SL to Breakeven after TP1
+• Trade with caution
+• 3% For Each Signal
 
-📌 ENTRY: {_fmt(signal['price'])}
-
-🎯 TP1 : {_fmt(signal['tp1'])}  (+{TP1_PERC}%)
-🎯 TP2 : {_fmt(signal['tp2'])}  (+{TP2_PERC}%)
-🎯 TP3 : {_fmt(signal['tp3'])}  (+{TP3_PERC}%)
-🎯 TP4 : {_fmt(signal['tp4'])}  (+{TP4_PERC}%)
-🎯 TP5 : {_fmt(signal['tp5'])}  (+{TP5_PERC}%)
-🎯 TP6 : {_fmt(signal['tp6'])}  (+{TP6_PERC}%)
-
-{sl_emoji} SL: {_fmt(signal['sl'])}
-————-
-Trade cautiously; you're not foolish or reckless.
-Don't borrow money or use funds that could put you in debt.
-Check the confidence indicator (in the signal).
-For automated trading, use cornix backtesting first.
-L E A K E D B Y: @BULLS_SIGNALS"""
+L E A K E D  B Y: @BULLS_SIGNALS"""
 
     return msg
 
 
 def main():
     print("=" * 50)
-    print("BULLS SIGNALS — Trend Following Bot")
+    print("BULLS SIGNALS v3 — ATR Dynamic SL (Max 2.2%)")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"ATR Multiplier: {ATR_SL_MULTIPLIER}x | Max SL: {MAX_SL_PERC}%")
     print("=" * 50)
 
     if not TELEGRAM_TOKEN or not CHANNEL_ID:
@@ -386,16 +374,11 @@ def main():
                 skipped_filter += 1
                 continue
 
-            if signal['confidence'] < 60:
-                print(f"  {symbol}: Confidence too low ({signal['confidence']}%)")
-                skipped_filter += 1
-                continue
-
             msg = build_message(signal)
             send_telegram(msg)
             cooldown_data[symbol] = datetime.now().isoformat()
             signals_sent += 1
-            print(f"  ✅ SIGNAL SENT: {symbol} {signal['direction']} (Conf: {signal['confidence']}%)")
+            print(f"  ✅ SIGNAL SENT: {symbol} {signal['direction']} (Acc: {signal['accuracy']}/10, SL: {signal['sl_distance_pct']}%)")
             time.sleep(1.5)
 
         except Exception as e:
