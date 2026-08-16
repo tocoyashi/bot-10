@@ -21,12 +21,10 @@ TIMEFRAME = '15m'
 TOP_N_COINS = 36
 LEVERAGE = 12
 
-# Targets (User specified)
+# Targets (3 أهداف فقط)
 TP1_PERC = 0.75
 TP2_PERC = 1.85
 TP3_PERC = 3.00
-TP4_PERC = 6.00
-TP5_PERC = 9.00
 
 # ⚡ SL ديناميكي بناءً على ATR
 ATR_SL_MULTIPLIER = 2.5
@@ -246,35 +244,31 @@ def analyze_symbol(symbol):
         sl_distance = atr * ATR_SL_MULTIPLIER
         max_sl_distance = current_price * (MAX_SL_PERC / 100)
 
-        # إذا تجاوز الديناميكي 2.2%، نُجبره على 2.2%
         if sl_distance > max_sl_distance:
             sl_distance = max_sl_distance
             sl_capped = True
         else:
             sl_capped = False
 
+        # ═══════════════════════════════════════════════
+        # 🎯 نقطة دخول واحدة فقط: سعر أحسن (انتظار)
+        # ═══════════════════════════════════════════════
         if direction == "LONG":
-            entry1 = current_price
-            entry2 = current_price - (atr * 1.0)
+            entry = current_price - (atr * 1.0)
             sl = current_price - sl_distance
             tp1 = current_price * (1 + TP1_PERC / 100)
             tp2 = current_price * (1 + TP2_PERC / 100)
             tp3 = current_price * (1 + TP3_PERC / 100)
-            tp4 = current_price * (1 + TP4_PERC / 100)
-            tp5 = current_price * (1 + TP5_PERC / 100)
         else:
-            entry1 = current_price
-            entry2 = current_price + (atr * 1.0)
+            entry = current_price + (atr * 1.0)
             sl = current_price + sl_distance
             tp1 = current_price * (1 - TP1_PERC / 100)
             tp2 = current_price * (1 - TP2_PERC / 100)
             tp3 = current_price * (1 - TP3_PERC / 100)
-            tp4 = current_price * (1 - TP4_PERC / 100)
-            tp5 = current_price * (1 - TP5_PERC / 100)
 
-        # نسبة R:R ديناميكية
+        # نسبة R:R ديناميكية (حسب الهدف الثالث الجديد)
         risk = abs(current_price - sl)
-        reward = abs(tp5 - current_price)
+        reward = abs(tp3 - current_price)
         rr = round(reward / risk, 1) if risk > 0 else 0
 
         return {
@@ -282,14 +276,11 @@ def analyze_symbol(symbol):
             'direction': direction,
             'accuracy': round(confidence / 10),
             'rr': rr,
-            'entry1': entry1,
-            'entry2': entry2,
+            'entry': entry,
             'sl': sl,
             'tp1': tp1,
             'tp2': tp2,
             'tp3': tp3,
-            'tp4': tp4,
-            'tp5': tp5,
             'atr': atr,
             'sl_distance_pct': round((risk / current_price) * 100, 2),
             'sl_capped': sl_capped
@@ -312,10 +303,6 @@ def build_message(signal):
     else:
         strength = "Low"
 
-    entry_low = min(signal['entry1'], signal['entry2'])
-    entry_high = max(signal['entry1'], signal['entry2'])
-
-    # إشعار إذا تم تفعيل الحد الأقصى
     capped_text = " 🔒Capped" if signal.get('sl_capped') else ""
 
     msg = f"""🧲 A New Signal has been added::
@@ -324,8 +311,8 @@ Leverage: {LEVERAGE}x
 Direction: {direction} | Type: Swing Pullback
 Signal Strength: {strength}
 ——————————
-ENTRY: {_fmt(entry_low)} - {_fmt(entry_high)}
-TARGETS: {_fmt(signal['tp1'])} - {_fmt(signal['tp2'])} - {_fmt(signal['tp3'])} - {_fmt(signal['tp4'])} - {_fmt(signal['tp5'])}
+ENTRY: {_fmt(signal['entry'])}
+TARGETS: {_fmt(signal['tp1'])} - {_fmt(signal['tp2'])} - {_fmt(signal['tp3'])}
 STOP LOSS: {_fmt(signal['sl'])} ({signal['sl_distance_pct']}%{capped_text})
 
 ✅ RISK MANAGEMENT
@@ -340,7 +327,7 @@ L E A K E D  B Y: @BULLS_SIGNALS"""
 
 def main():
     print("=" * 50)
-    print("BULLS SIGNALS v3 — ATR Dynamic SL (Max 2.2%)")
+    print("BULLS SIGNALS v3 — ATR Dynamic SL (Max 2.2%) | 3 Targets")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"ATR Multiplier: {ATR_SL_MULTIPLIER}x | Max SL: {MAX_SL_PERC}%")
     print("=" * 50)
