@@ -17,19 +17,20 @@ warnings.filterwarnings('ignore')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN') or os.environ.get('BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
-TIMEFRAME = '15m'
-TOP_N_COINS = 36
+TIMEFRAME = '30m'
+TOP_N_COINS = 40
 LEVERAGE = 12
 
-# Targets (3 أهداف فقط)
-TP1_PERC = 0.75
+# Targets (4 أهداف)
+TP1_PERC = 0.80
 TP2_PERC = 1.85
 TP3_PERC = 3.00
+TP4_PERC = 4.60
 
 # ⚡ SL ديناميكي بناءً على ATR
-ATR_SL_MULTIPLIER = 2.5
+ATR_SL_MULTIPLIER = 3.5
 # 🔒 الحد الأقصى لوقف الخسارة (لا يتجاوز هذا الرقم)
-MAX_SL_PERC = 2.2
+MAX_SL_PERC = 4.2
 
 # Quality Filters
 VOLUME_LOOKBACK = 20
@@ -259,16 +260,18 @@ def analyze_symbol(symbol):
             tp1 = current_price * (1 + TP1_PERC / 100)
             tp2 = current_price * (1 + TP2_PERC / 100)
             tp3 = current_price * (1 + TP3_PERC / 100)
+            tp4 = current_price * (1 + TP4_PERC / 100)
         else:
             entry = current_price + (atr * 1.0)
             sl = current_price + sl_distance
             tp1 = current_price * (1 - TP1_PERC / 100)
             tp2 = current_price * (1 - TP2_PERC / 100)
             tp3 = current_price * (1 - TP3_PERC / 100)
+            tp4 = current_price * (1 - TP4_PERC / 100)
 
-        # نسبة R:R ديناميكية (حسب الهدف الثالث الجديد)
+        # نسبة R:R ديناميكية (حسب الهدف الرابع)
         risk = abs(current_price - sl)
-        reward = abs(tp3 - current_price)
+        reward = abs(tp4 - current_price)
         rr = round(reward / risk, 1) if risk > 0 else 0
 
         return {
@@ -281,6 +284,7 @@ def analyze_symbol(symbol):
             'tp1': tp1,
             'tp2': tp2,
             'tp3': tp3,
+            'tp4': tp4,
             'atr': atr,
             'sl_distance_pct': round((risk / current_price) * 100, 2),
             'sl_capped': sl_capped
@@ -293,43 +297,39 @@ def analyze_symbol(symbol):
 
 def build_message(signal):
     pair = signal['symbol'].replace('/', '')
-    direction = signal['direction']
-    accuracy = signal['accuracy']
 
-    if accuracy >= 8:
-        strength = "High"
-    elif accuracy >= 6:
-        strength = "Medium"
-    else:
-        strength = "Low"
+    msg = f"""✅Signal Alert: #{pair}
 
-    capped_text = " 🔒Capped" if signal.get('sl_capped') else ""
+Direction: {signal['direction']}
+Leverage: {LEVERAGE}x 
 
-    msg = f"""🧲 A New Signal has been added::
-COIN: #{pair}
-Leverage: {LEVERAGE}x
-Direction: {direction} | Type: Swing Pullback
-Signal Strength: {strength}
-——————————
-ENTRY: {_fmt(signal['entry'])}
-TARGETS: {_fmt(signal['tp1'])} - {_fmt(signal['tp2'])} - {_fmt(signal['tp3'])}
-STOP LOSS: {_fmt(signal['sl'])} ({signal['sl_distance_pct']}%{capped_text})
+Entry: {_fmt(signal['entry'])}
 
-✅ RISK MANAGEMENT
-• Move SL to Breakeven after TP1
-• Trade with caution
-• 3% For Each Signal
+Targets:
+1- {_fmt(signal['tp1'])}
+2- {_fmt(signal['tp2'])}
+3- {_fmt(signal['tp3'])}
+4- {_fmt(signal['tp4'])}
 
-L E A K E D  B Y: @BULLS_SIGNALS"""
+🚫 Stop Loss: {_fmt(signal['sl'])} ({signal['sl_distance_pct']}%)
+
+━━━━━━━━━━━━━━━
+🤖 AutoTrade:
+
+No need to monitor the charts! Our Bot executes every trade in real time
+Just connect and let the bot follow
+Perfect for beginners or busy traders.
+
+L E A K E D B Y: @BULLS_SIGNALS"""
 
     return msg
 
 
 def main():
     print("=" * 50)
-    print("BULLS SIGNALS v3 — ATR Dynamic SL (Max 2.2%) | 3 Targets")
+    print("BULLS SIGNALS v3 — 30m Timeframe | ATR Dynamic SL (Max 2.2%) | 4 Targets")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"ATR Multiplier: {ATR_SL_MULTIPLIER}x | Max SL: {MAX_SL_PERC}%")
+    print(f"Timeframe: {TIMEFRAME} | ATR Multiplier: {ATR_SL_MULTIPLIER}x | Max SL: {MAX_SL_PERC}%")
     print("=" * 50)
 
     if not TELEGRAM_TOKEN or not CHANNEL_ID:
