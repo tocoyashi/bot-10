@@ -17,15 +17,15 @@ warnings.filterwarnings('ignore')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN') or os.environ.get('BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
-TIMEFRAME = '30m'
+TIMEFRAME = '1h'
 TOP_N_COINS = 40
-LEVERAGE = 12
+LEVERAGE = 15
 
 # Targets (4 أهداف)
-TP1_PERC = 0.80
-TP2_PERC = 1.85
-TP3_PERC = 3.00
-TP4_PERC = 4.60
+TP1_PERC = 0.70
+TP2_PERC = 1.95
+TP3_PERC = 3.50
+TP4_PERC = 5.60
 
 # ⚡ SL ديناميكي بناءً على ATR
 ATR_SL_MULTIPLIER = 3.5
