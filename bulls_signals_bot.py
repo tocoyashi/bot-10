@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+MEXC Trading Signal Bot — Supertrend Edition (Fixed)
+HTF 4h Filter | Entry-based Targets | Corrected SL Cap | Extended Cooldown
+"""
+
 import os
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -18,6 +24,7 @@ TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN') or os.environ.get('BOT_TOKEN')
 CHANNEL_ID = os.environ.get('CHANNEL_ID')
 
 TIMEFRAME = '1h'
+HTF_TIMEFRAME = '4h'           # NEW: فريم أعلى للاتجاه الكبير
 TOP_N_COINS = 25
 LEVERAGE = 15
 
@@ -30,15 +37,16 @@ TP4_PERC = 5.90
 # ⚡ SL ديناميكي بناءً على ATR
 ATR_SL_MULTIPLIER = 3.5
 # 🔒 الحد الأقصى لوقف الخسارة (لا يتجاوز هذا الرقم)
-MAX_SL_PERC = 4.2
+MAX_SL_PERC = 2.2              # FIXED: كان 4.2 — الآن يتوافق مع التعليق
 
 # Quality Filters
 VOLUME_LOOKBACK = 20
-COOLDOWN_HOURS = 1
+COOLDOWN_HOURS = 4             # FIXED: كان 1 — الآن 4 ساعات (مناسب لفريم 1h)
 COOLDOWN_FILE = Path('cooldown.json')
 
 STABLECOINS = ['USDC/USDT', 'TUSD/USDT', 'DAI/USDT', 'FDUSD/USDT', 'USDP/USDT', 'PYUSD/USDT']
-BLACKLIST = ['USD1/USDT', 'USDE/USDT', 'ISEK/USDT', 'MBG/USDT', 'AIX/USDT', 'XPLK/USDT', '9BIT/USDT', 'CYS/USDT', 'USDGOUSDT', 'GOLD/USDT']
+BLACKLIST = ['USD1/USDT', 'USDE/USDT', 'ISEK/USDT', 'MBG/USDT', 'AIX/USDT',
+             'XPLK/USDT', '9BIT/USDT', 'CYS/USDT', 'USDGOUSDT', 'GOLD/USDT']
 
 
 def _fmt(price):
@@ -102,6 +110,20 @@ def get_mexc_data(symbol, timeframe, limit=150):
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)
     return df
+
+
+# NEW: جلب EMA20 على فريم 4h للفلتر العالي
+def get_htf_ema20(symbol, tf='4h'):
+    try:
+        exchange = ccxt.mexc({'enableRateLimit': True})
+        ohlcv = exchange.fetch_ohlcv(symbol, tf, limit=30)
+        if len(ohlcv) < 20:
+            return None
+        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+        ema20 = df['c'].ewm(span=20, adjust=False).mean().iloc[-1]
+        return ema20
+    except Exception:
+        return None
 
 
 def get_top_mexc_coins(limit=50):
@@ -240,6 +262,23 @@ def analyze_symbol(symbol):
             return None
 
         # ═══════════════════════════════════════════════
+        # 🆕 HTF Filter: التحقق من EMA20 على فريم 4h
+        # ═══════════════════════════════════════════════
+        htf_ema = get_htf_ema20(symbol, HTF_TIMEFRAME)
+        if htf_ema is not None:
+            diff_pct = (current_price - htf_ema) / htf_ema * 100
+            if direction == "LONG" and diff_pct < -3.0:
+                print(f"  {symbol}: HTF 4h too bearish ({diff_pct:.1f}%)")
+                return None
+            if direction == "SHORT" and diff_pct > 3.0:
+                print(f"  {symbol}: HTF 4h too bullish ({diff_pct:.1f}%)")
+                return None
+            if direction == "LONG" and diff_pct > 0:
+                confidence += 5  # السعر فوق EMA20 على 4h = إضافي
+            if direction == "SHORT" and diff_pct < 0:
+                confidence += 5  # السعر تحت EMA20 على 4h = إضافي
+
+        # ═══════════════════════════════════════════════
         # ⚡ SL ديناميكي بناءً على ATR + حد أقصى 2.2%
         # ═══════════════════════════════════════════════
         sl_distance = atr * ATR_SL_MULTIPLIER
@@ -257,21 +296,23 @@ def analyze_symbol(symbol):
         if direction == "LONG":
             entry = current_price - (atr * 1.0)
             sl = current_price - sl_distance
-            tp1 = current_price * (1 + TP1_PERC / 100)
-            tp2 = current_price * (1 + TP2_PERC / 100)
-            tp3 = current_price * (1 + TP3_PERC / 100)
-            tp4 = current_price * (1 + TP4_PERC / 100)
+            # FIXED: الأهداف تُحسب من entry وليس من current_price
+            tp1 = entry * (1 + TP1_PERC / 100)
+            tp2 = entry * (1 + TP2_PERC / 100)
+            tp3 = entry * (1 + TP3_PERC / 100)
+            tp4 = entry * (1 + TP4_PERC / 100)
         else:
             entry = current_price + (atr * 1.0)
             sl = current_price + sl_distance
-            tp1 = current_price * (1 - TP1_PERC / 100)
-            tp2 = current_price * (1 - TP2_PERC / 100)
-            tp3 = current_price * (1 - TP3_PERC / 100)
-            tp4 = current_price * (1 - TP4_PERC / 100)
+            # FIXED: الأهداف تُحسب من entry وليس من current_price
+            tp1 = entry * (1 - TP1_PERC / 100)
+            tp2 = entry * (1 - TP2_PERC / 100)
+            tp3 = entry * (1 - TP3_PERC / 100)
+            tp4 = entry * (1 - TP4_PERC / 100)
 
         # نسبة R:R ديناميكية (حسب الهدف الرابع)
-        risk = abs(current_price - sl)
-        reward = abs(tp4 - current_price)
+        risk = abs(entry - sl)
+        reward = abs(tp4 - entry)
         rr = round(reward / risk, 1) if risk > 0 else 0
 
         return {
@@ -286,7 +327,7 @@ def analyze_symbol(symbol):
             'tp3': tp3,
             'tp4': tp4,
             'atr': atr,
-            'sl_distance_pct': round((risk / current_price) * 100, 2),
+            'sl_distance_pct': round((risk / entry) * 100, 2),  # FIXED: من entry
             'sl_capped': sl_capped
         }
 
@@ -327,9 +368,10 @@ L E A K E D B Y: @BULLS_SIGNALS"""
 
 def main():
     print("=" * 50)
-    print("BULLS SIGNALS v3 — 30m Timeframe | ATR Dynamic SL (Max 2.2%) | 4 Targets")
+    print("BULLS SIGNALS v4 — Fixed Edition")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Timeframe: {TIMEFRAME} | ATR Multiplier: {ATR_SL_MULTIPLIER}x | Max SL: {MAX_SL_PERC}%")
+    print(f"Timeframe: {TIMEFRAME} | HTF: {HTF_TIMEFRAME} | Cooldown: {COOLDOWN_HOURS}h")
+    print(f"ATR Multiplier: {ATR_SL_MULTIPLIER}x | Max SL: {MAX_SL_PERC}% | Entry-based Targets")
     print("=" * 50)
 
     if not TELEGRAM_TOKEN or not CHANNEL_ID:
@@ -351,7 +393,7 @@ def main():
         try:
             if is_on_cooldown(symbol, cooldown_data):
                 skipped_cooldown += 1
-                print(f"  {symbol}: On cooldown")
+                print(f"  {symbol}: On cooldown ({COOLDOWN_HOURS}h)")
                 continue
 
             time.sleep(0.6)
@@ -365,7 +407,7 @@ def main():
             send_telegram(msg)
             cooldown_data[symbol] = datetime.now().isoformat()
             signals_sent += 1
-            print(f"  ✅ SIGNAL SENT: {symbol} {signal['direction']} (Acc: {signal['accuracy']}/10, SL: {signal['sl_distance_pct']}%)")
+            print(f"  ✅ SIGNAL SENT: {symbol} {signal['direction']} (Acc: {signal['accuracy']}/10, SL: {signal['sl_distance_pct']}%, RR: {signal['rr']}:1)")
             time.sleep(1.5)
 
         except Exception as e:
