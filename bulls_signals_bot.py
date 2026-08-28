@@ -26,7 +26,7 @@ CHANNEL_ID = os.environ.get('CHANNEL_ID')
 TIMEFRAME = '1h'
 HTF_TIMEFRAME = '4h'           # NEW: فريم أعلى للاتجاه الكبير
 TOP_N_COINS = 25
-LEVERAGE = 15
+LEVERAGE = 14
 
 # Targets (4 أهداف)
 TP1_PERC = 0.70
